@@ -217,6 +217,7 @@ def add_support_columns(df: DataFrame, config: SCD2Config) -> DataFrame:
             UPSERT_FLAG_COLUMN,
             f.when(df[COL_ORIG_VALID_FROM].isNull(), "I").otherwise("U"),
         )
+        .withColumn(config.scd_columns.insert_date, f.current_timestamp())
     )
 
     if config.source_type == "full":
