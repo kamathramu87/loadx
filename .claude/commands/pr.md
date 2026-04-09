@@ -51,4 +51,12 @@ Use this template:
 
 ## Now create the PR
 
-Run `make check` and `make test`, then create a branch, commit, push, and open the PR using `gh pr create` following the rules above.
+Before branching, always sync with the latest main:
+
+```bash
+git checkout main
+git pull origin main
+git checkout -b <branch-name>
+```
+
+Then run `make check` and `make test`, commit, push, and open the PR using `gh pr create` following the rules above.
