@@ -60,3 +60,15 @@ git checkout -b <branch-name>
 ```
 
 Then run `make check` and `make test`, commit, push, and open the PR using `gh pr create` following the rules above.
+
+After creating the PR, ask the user:
+
+> "Would you like to enable auto-merge (squash) on this PR?"
+
+If yes, run:
+
+```bash
+gh pr merge --auto --squash <PR-URL>
+```
+
+If no, leave the PR open for manual merge.
