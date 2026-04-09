@@ -62,7 +62,7 @@ class SCD2Loader:
             scd_columns: Override default SCD2 output column names. Accepts an
                 `SCD2ColumnNames` instance (recommended, full IDE type hints) or a plain
                 dict with any subset of keys: `valid_from`, `valid_until`,
-                `active_flag`, `delete_flag`, `row_hash`.
+                `active_flag`, `delete_flag`, `row_hash`, `insert_date`.
             enable_latest_record_flag: When `True`, adds a `latest_record_flag` column
                 that is `True` for the most recent record per business key.
             source_type: ``"full"`` (default) for full snapshot sources where

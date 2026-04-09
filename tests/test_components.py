@@ -90,6 +90,7 @@ class TestSCD2ColumnNames:
             "active_flag",
             "delete_flag",
             "row_hash",
+            "insert_date",
             "latest_record_flag",
         ]
         assert set(field_list) == set(expected_fields)

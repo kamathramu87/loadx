@@ -109,6 +109,7 @@ The resulting DataFrame includes all source columns plus:
 | `active_flag` | `active_flag` | `True` for the currently active version of a record |
 | `delete_flag` | `delete_flag` | `True` if the record was deleted in the source. Only present when `source_type=SourceType.FULL` |
 | `row_hash` | `row_hash` | SHA-256 hash of non-key columns (excluding `ignore_columns`) |
+| `insert_date` | `insert_date` | Timestamp when this record version was written to the target table |
 | `upsert_flag` | `upsert_flag` | `I` for inserts, `U` for updates |
 | `latest_record_flag` | `latest_record_flag` | `True` for the most recent record per business key. Only present when `enable_latest_record_flag=True` |
 

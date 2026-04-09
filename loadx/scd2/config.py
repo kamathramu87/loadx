@@ -43,6 +43,7 @@ class SCD2ColumnNames:
         active_flag: `True` for the currently active version of a record.
         delete_flag: `True` if the record was deleted in the source.
         row_hash: SHA-256 hash of non-key columns, used for change detection.
+        insert_date: Timestamp when this record version was written to the target table.
         latest_record_flag: `True` for the most recent record per business key.
             Only present when `enable_latest_record_flag=True`.
 
@@ -59,6 +60,7 @@ class SCD2ColumnNames:
     active_flag: str = "active_flag"
     delete_flag: str = "delete_flag"
     row_hash: str = "row_hash"
+    insert_date: str = "insert_date"
     latest_record_flag: str = "latest_record_flag"
 
     @classmethod
@@ -121,7 +123,8 @@ class SCD2Config:
                 records. Defaults to `9999-12-31`.
             scd_columns: Override default SCD2 output column names. Accepts an
                 `SCD2ColumnNames` instance or a plain dict with any subset of keys:
-                `valid_from`, `valid_until`, `active_flag`, `delete_flag`, `row_hash`.
+                `valid_from`, `valid_until`, `active_flag`, `delete_flag`, `row_hash`,
+                `insert_date`.
             enable_latest_record_flag: When `True`, adds a `latest_record_flag` column
                 that is `True` for the most recent record per business key.
             source_type: Whether the source is a ``"full"`` snapshot or
