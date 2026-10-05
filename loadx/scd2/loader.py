@@ -59,7 +59,10 @@ class SCD2Loader:
                 full dimension table built from earlier outputs. It must contain
                 the source columns plus `valid_from` and `valid_until`. Only
                 current records (`valid_until == open_end_date`) are processed;
-                closed history is never modified and never appears in the output.
+                closed history keeps its dates and attributes. With
+                `enable_latest_record_flag=True`, pass the full history with all
+                configured SCD2 columns: a reappearing key also emits an update
+                clearing its previous closed version's latest flag.
                 Each business key may have at most one current record. Source
                 rows dated on or before the latest target `valid_from` are
                 ignored, and an older source raises `OldDataExceptionError`. The
@@ -95,7 +98,8 @@ class SCD2Loader:
                 that conflict on business key and snapshot date, or a target with
                 more than one active record per business key
 
-        All of these exceptions are subclasses of `ValueError`.
+        Configuration and data validation exceptions are subclasses of
+        `ValueError`; empty-source and stale-source exceptions are SCD2 errors.
         """
         config = SCD2Config.create(
             business_keys=business_keys,
@@ -121,7 +125,8 @@ class SCD2Loader:
 
         df = t.prepare_source_data(df_src, config)
 
-        if df_tgt and not df_tgt.isEmpty():
+        has_target = df_tgt is not None and not df_tgt.isEmpty()
+        if has_target and df_tgt is not None:
             t.validate_target(df_tgt, config, source_columns)
             df = t.handle_incremental_load(df, df_tgt, config)
 
@@ -136,7 +141,10 @@ class SCD2Loader:
         df = t.apply_hash_columns(df, config, source_columns)
         df = t.filter_for_changes(df, config, window)
         df = t.add_support_columns(df, config)
-        return t.finalize_output(df, config)
+        changes = t.finalize_output(df, config)
+        if has_target and df_tgt is not None and config.enable_latest_record_flag:
+            changes = t.clear_previous_latest_flags(changes, df_tgt, config)
+        return changes
 
     @staticmethod
     def _source_columns(df_src: DataFrame, config: SCD2Config) -> list[str]:

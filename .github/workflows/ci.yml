@@ -26,33 +26,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for source changes
-        id: changes
-        run: |
-          git diff --name-only origin/main...HEAD | grep -qE '^(loadx/|tests/|pyproject\.toml|uv\.lock|mypy\.ini|\.github/workflows/ci\.yml)' \
-            && echo "src_changed=true" >> $GITHUB_OUTPUT \
-            || echo "src_changed=false" >> $GITHUB_OUTPUT
-
       - name: Set up Python
-        if: steps.changes.outputs.src_changed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Install uv
-        if: steps.changes.outputs.src_changed == 'true'
         uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        if: steps.changes.outputs.src_changed == 'true'
         run: uv sync --all-extras
 
       - name: Run checks
-        if: steps.changes.outputs.src_changed == 'true' && matrix.python-version == '3.11'
+        if: matrix.python-version == '3.11'
         run: make check
 
       - name: Run tests
-        if: steps.changes.outputs.src_changed == 'true'
         run: make test
 
   # Branch protection requires a check named "test"; matrix jobs report under

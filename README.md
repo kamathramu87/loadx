@@ -92,6 +92,15 @@ from delta.tables import DeltaTable
 
 To exclude columns such as audit timestamps from change detection, pass `ignore_columns=["updated_at"]`.
 
+With `enable_latest_record_flag=True`, pass the full target history with all SCD2
+columns. A reappearing key emits an update clearing the previous closed version's
+latest flag as well as an insert for the new version.
+
+Hashes now use structured JSON with explicit nulls, excluding business keys and
+ignored columns. This changes stored hash values from earlier releases; see
+[hash compatibility](docs/index.md#hash-compatibility) before comparing persisted
+hashes outside the loader.
+
 ## Output columns
 
 | Column | Description |

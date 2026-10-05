@@ -96,8 +96,8 @@ from delta.tables import DeltaTable
 
 | Rule | Detail |
 |---|---|
-| Required columns | The source columns plus `valid_from` and `valid_until`. Other SCD2 columns are ignored and recomputed. |
-| Eligible records | Only current records, where `valid_until` equals `open_end_date` (or is null when `open_end_date=None`). Closed records are never modified and never appear in the output. |
+| Required columns | The retained source attributes plus `valid_from` and `valid_until`; `snapshot_date` is optional in the target. With `enable_latest_record_flag=True`, pass the full history with all configured SCD2 output columns. |
+| Eligible records | Current records, where `valid_until` equals `open_end_date` (or is null when `open_end_date=None`). A reappearing key also emits a `U` row clearing its previous closed version's latest flag, when enabled. Historical dates and attributes are preserved. |
 | One current record per key | A target with more than one current record for a business key is rejected with `DataValidationError`. |
 | Freshness | A source older than the latest target `valid_from` raises `OldDataExceptionError`. Source rows dated on or before that date are ignored. |
 | Applying the output | Merge on business keys plus `valid_from`: update `U` rows, insert `I` rows. |
@@ -140,6 +140,24 @@ result_df = loader.slowly_changing_dimension(
     enable_latest_record_flag=True,
 )
 ```
+
+Use this option consistently from the initial load onward. For incremental loads,
+pass the complete target history, including its SCD2 metadata. When a deleted key
+reappears, merge both the new insert and the update clearing the old latest flag.
+That historical update preserves the existing dates, attributes, hash and insert timestamp.
+
+### Hash compatibility
+
+`row_hash` uses SHA-256 over JSON with sorted attribute names and explicit nulls.
+Business keys, the snapshot date and `ignore_columns` are excluded. Field boundaries
+are preserved, so delimiters inside values and null positions cannot hide changes.
+Keep attribute names and types consistent between loads.
+
+This format changes hash values produced by earlier delimiter-based releases.
+The loader recomputes hashes from attributes on both sides of an incremental load,
+so existing hashes do not cause artificial versions. Unchanged target rows retain
+their stored hashes until rewritten. Consumers that compare stored hashes outside
+the loader should backfill `row_hash` using the new format before comparing them.
 
 ## API Reference
 
