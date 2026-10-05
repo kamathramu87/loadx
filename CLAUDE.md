@@ -57,10 +57,13 @@ loadx/
 SCD2Loader.slowly_changing_dimension()
   → SCD2Config.create()               # Build config from parameters
   → SCD2Loader._process()
-      → transforms.validate_config()          # Validate keys, columns
-      → transforms.validate_inputs()          # Validate DataFrame, columns
+      → transforms.validate_config()          # Keys, source_type, output column name collisions
+      → transforms.validate_inputs()          # Non-empty DataFrame, required columns
+      → transforms.validate_source_columns()  # Reserved names, ignore/non_copy columns exist
+      → transforms.validate_source_rows()     # Null keys/dates, conflicting rows per key + date
       → transforms.prepare_source_data()      # Add placeholder SCD2 columns
-      → transforms.handle_incremental_load()  # Merge with target (if exists)
+      → transforms.validate_target()          # Target columns, one active row per key (if target)
+      → transforms.handle_incremental_load()  # Merge active target rows (if target)
       → transforms.process_deletions()        # Handle records deleted between snapshots
       → transforms.apply_hash_columns()       # SHA-256 hashes for change detection
       → transforms.filter_for_changes()       # Window-based lag comparison
@@ -72,8 +75,8 @@ SCD2Loader.slowly_changing_dimension()
 
 - **Change detection**: Two hash columns — `row_hash` (content only) and `row_hash_changed` (includes delete flag). A record is considered changed when `row_hash_changed` differs from the previous snapshot via a window `lag()`.
 - **Deletion handling**: Deletions are detected by comparing source business keys between consecutive snapshots. Deleted records get a `delete_flag=True` and a closed `valid_until` date.
-- **Incremental loads**: When a `target_df` is passed, active target records are merged with source data. Only changed records (by hash) flow through the pipeline.
-- **SCD2 column names are configurable** via `SCD2Columns` dataclass — all output column names can be overridden.
+- **Incremental loads**: When a `df_tgt` is passed, only its active records (`valid_until == open_end_date`) are merged with source data; closed history rows are excluded because they would tie on the target date in the date-ordered windows. Only changed records (by hash) flow through the pipeline.
+- **SCD2 column names are configurable** via `SCD2ColumnNames` dataclass — all output column names can be overridden.
 - **`ignore_columns`**: List of column names excluded from hash calculations (e.g., audit timestamps that shouldn't trigger SCD2 changes).
 - **`OPEN_END_DATE`** = `9999-12-31` marks currently active records.
 

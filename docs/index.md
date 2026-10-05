@@ -195,12 +195,27 @@ result_df = loader.slowly_changing_dimension(
 )
 ```
 
+## Input Validation
+
+Invalid input raises an error before any processing, so it can't silently change the SCD2 history:
+
+- `source_type` must be `"full"` or `"incremental"` (or a `SourceType` member).
+- `date_column` cannot be a business key, and `non_copy_fields` cannot include business keys or `date_column`.
+- SCD2 output column names (including `upsert_flag`) must be unique and must not reuse internal processing names such as `deleted`.
+- Every column in `ignore_columns` and `non_copy_fields` must exist in the source.
+- Source columns must not reuse SCD2 output names (`valid_from`, `row_hash`, `upsert_flag`, ...) or internal names. Rename them, list them in `non_copy_fields`, or rename the output columns via `scd_columns`.
+- Business keys and `date_column` must not be null.
+- Each business key can have at most one row per snapshot date. Exact duplicate rows are allowed and collapsed; rows with the same key and date but different values are rejected, because there is no deterministic way to choose between them.
+- `df_tgt` must contain the source columns plus `valid_from` and `valid_until`, and at most one active record (`valid_until` equal to `open_end_date`) per business key. You can pass the full dimension table: only active records take part in the merge, and closed history rows are never modified.
+
 ## Exceptions
+
+All exceptions below are subclasses of `ValueError` except `EmptyDataExceptionError` and `OldDataExceptionError`.
 
 | Exception | Raised When |
 |---|---|
 | `EmptyDataExceptionError` | Source DataFrame is empty |
 | `OldDataExceptionError` | Source snapshot date is older than the latest target date |
 | `BusinessKeysEmptyError` | No business keys provided |
-| `ConfigurationError` | Invalid configuration values |
-| `DataValidationError` | Required columns are missing from the source |
+| `ConfigurationError` | Invalid parameters, such as an unknown `source_type` or colliding output column names |
+| `DataValidationError` | Invalid source or target data: missing or reserved columns, null keys or dates, conflicting rows for the same key and snapshot date, or duplicate active target records |

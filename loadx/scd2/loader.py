@@ -77,7 +77,15 @@ class SCD2Loader:
         Raises:
             EmptyDataExceptionError: When source DataFrame is empty
             OldDataExceptionError: When source data is older than target data
-            ValueError: When invalid parameters are provided
+            BusinessKeysEmptyError: When no business keys are provided
+            ConfigurationError: When parameters are invalid, e.g. an unknown
+                `source_type` or output column names that collide
+            DataValidationError: When the source or target data is invalid, e.g.
+                missing or reserved columns, null business keys or dates, rows
+                that conflict on business key and snapshot date, or a target with
+                more than one active record per business key
+
+        All of these exceptions are subclasses of `ValueError`.
         """
         config = SCD2Config.create(
             business_keys=business_keys,
@@ -96,12 +104,15 @@ class SCD2Loader:
     ) -> DataFrame:
         t.validate_config(config)
         t.validate_inputs(df_src, config.business_keys, config.date_column)
+        t.validate_source_columns(df_src, config)
+        t.validate_source_rows(df_src, config)
 
         source_columns = self._source_columns(df_src, config)
 
         df = t.prepare_source_data(df_src, config)
 
         if df_tgt and not df_tgt.isEmpty():
+            t.validate_target(df_tgt, config, source_columns)
             df = t.handle_incremental_load(df, df_tgt, config)
 
         window = Window.partitionBy(config.business_keys).orderBy(config.date_column)
