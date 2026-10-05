@@ -527,3 +527,110 @@ class TestFullHistoryTarget:
             ("B", datetime(2024, 1, 2), datetime(2024, 1, 3), False, "U"),
             ("C", datetime(2024, 1, 3), datetime(9999, 12, 31), True, "I"),
         ]
+
+
+def apply_merge(target, changes, business_keys):
+    """Apply SCD2 output to a target the way a MERGE would.
+
+    Rows flagged ``U`` replace the target row with the same business key and
+    ``valid_from``; rows flagged ``I`` are appended.
+    """
+    match_cols = [*business_keys, "valid_from"]
+    untouched = target.join(changes.select(*match_cols), on=match_cols, how="left_anti")
+    return untouched.unionByName(changes.drop("upsert_flag"))
+
+
+class TestSuccessiveIncrementalLoads:
+    """Regression: repeated incremental loads must never rewrite closed history.
+
+    Key 1 accumulates several closed versions, key 3 is deleted and reappears,
+    and key 2 changes once. After each load the output is merged into the
+    target, so later loads see a target holding multiple historical versions
+    per key.
+    """
+
+    COMPARE = [
+        "id",
+        "city",
+        "valid_from",
+        "valid_until",
+        "active_flag",
+        "delete_flag",
+        "row_hash",
+    ]
+
+    SNAPSHOTS = [
+        [(1, "A1"), (2, "B1"), (3, "C1")],
+        [(1, "A2"), (2, "B1"), (3, "C1")],  # key 1 changes
+        [(1, "A3"), (2, "B1")],  # key 1 changes again, key 3 deleted
+        [
+            (1, "A3"),
+            (2, "B2"),
+            (3, "C1"),
+        ],  # key 1 unchanged, key 2 changes, key 3 reappears
+        [
+            (1, "A4"),
+            (2, "B2"),
+            (3, "C1"),
+        ],  # key 1 changes with three closed versions in target
+    ]
+
+    @pytest.fixture
+    def snapshots(self, spark_session):
+        return [
+            spark_session.createDataFrame(
+                [(k, city, datetime(2024, 1, day)) for k, city in rows], SCHEMA
+            )
+            for day, rows in enumerate(self.SNAPSHOTS, start=1)
+        ]
+
+    @pytest.fixture
+    def incremental_target(self, spark_session, snapshots):
+        scd = SCD2Loader(spark_session)
+        target = scd.slowly_changing_dimension(
+            df_src=snapshots[0], business_keys="id"
+        ).drop("upsert_flag")
+        for snapshot in snapshots[1:]:
+            changes = scd.slowly_changing_dimension(
+                df_src=snapshot, df_tgt=target, business_keys="id"
+            )
+            target = apply_merge(target, changes, ["id"]).localCheckpoint()
+        return target
+
+    @staticmethod
+    def rows(df, cols):
+        return sorted(tuple(r) for r in df.select(*cols).collect())
+
+    def test_matches_single_full_recompute(
+        self, spark_session, snapshots, incremental_target
+    ):
+        all_snapshots = snapshots[0]
+        for snapshot in snapshots[1:]:
+            all_snapshots = all_snapshots.union(snapshot)
+        recomputed = SCD2Loader(spark_session).slowly_changing_dimension(
+            df_src=all_snapshots, business_keys="id"
+        )
+
+        assert self.rows(incremental_target, self.COMPARE) == self.rows(
+            recomputed, self.COMPARE
+        )
+
+    def test_final_history(self, incremental_target):
+        d = lambda day: datetime(2024, 1, day)  # noqa: E731
+        open_end = datetime(9999, 12, 31)
+        cols = ["id", "city", "valid_from", "valid_until", "active_flag", "delete_flag"]
+
+        assert self.rows(incremental_target, cols) == [
+            (1, "A1", d(1), d(2), False, False),
+            (1, "A2", d(2), d(3), False, False),
+            (1, "A3", d(3), d(5), False, False),
+            (1, "A4", d(5), open_end, True, False),
+            (2, "B1", d(1), d(4), False, False),
+            (2, "B2", d(4), open_end, True, False),
+            (3, "C1", d(1), d(3), False, True),
+            (3, "C1", d(4), open_end, True, False),
+        ]
+
+    def test_one_active_version_per_key(self, incremental_target):
+        active = incremental_target.filter("active_flag").groupBy("id").count()
+        assert self.rows(active, ["id", "count"]) == [(1, 1), (2, 1), (3, 1)]

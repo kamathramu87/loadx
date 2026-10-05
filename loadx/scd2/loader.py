@@ -55,7 +55,17 @@ class SCD2Loader:
             df_src: Source DataFrame containing the data to process
             business_keys: List of columns that constitute the business key
             date_column: Column name containing snapshot dates
-            df_tgt: Optional target DataFrame for incremental loads
+            df_tgt: Existing SCD2 table for an incremental load, typically the
+                full dimension table built from earlier outputs. It must contain
+                the source columns plus `valid_from` and `valid_until`. Only
+                current records (`valid_until == open_end_date`) are processed;
+                closed history is never modified and never appears in the output.
+                Each business key may have at most one current record. Source
+                rows dated on or before the latest target `valid_from` are
+                ignored, and an older source raises `OldDataExceptionError`. The
+                result holds only merge operations: apply it by matching on the
+                business keys plus `valid_from`, updating `U` rows and inserting
+                `I` rows.
             ignore_columns: Columns to ignore when calculating row hashes
             non_copy_fields: Fields to exclude from source to target
             open_end_date: Date to use for active records (default: 9999-12-31)

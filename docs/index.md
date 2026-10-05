@@ -90,6 +90,18 @@ from delta.tables import DeltaTable
 
 `upsert_flag` is included in the output, so drop it before merging if the target table has no such column.
 
+#### Target contract
+
+`df_tgt` is the SCD2 table built from earlier loads, after their output has been merged. You can pass the full table, including closed history.
+
+| Rule | Detail |
+|---|---|
+| Required columns | The source columns plus `valid_from` and `valid_until`. Other SCD2 columns are ignored and recomputed. |
+| Eligible records | Only current records, where `valid_until` equals `open_end_date` (or is null when `open_end_date=None`). Closed records are never modified and never appear in the output. |
+| One current record per key | A target with more than one current record for a business key is rejected with `DataValidationError`. |
+| Freshness | A source older than the latest target `valid_from` raises `OldDataExceptionError`. Source rows dated on or before that date are ignored. |
+| Applying the output | Merge on business keys plus `valid_from`: update `U` rows, insert `I` rows. |
+
 ### Source Type
 
 Use `SourceType.FULL` (default) when the source is a complete daily/periodic snapshot — records absent from the latest snapshot are detected as deletions and `delete_flag` is included in the output:
@@ -144,7 +156,7 @@ result_df = loader.slowly_changing_dimension(
 | `df_src` | `DataFrame` | — | Source snapshot DataFrame |
 | `business_keys` | `list[str] \| str` | — | Columns that uniquely identify a dimension row |
 | `date_column` | `str` | `snapshot_date` | Column containing the snapshot date |
-| `df_tgt` | `DataFrame \| None` | `None` | Existing SCD2 target for incremental loads |
+| `df_tgt` | `DataFrame \| None` | `None` | Existing SCD2 table for incremental loads. See [Target contract](#target-contract) |
 | `ignore_columns` | `list[str] \| None` | `None` | Columns excluded from hash-based change detection |
 | `non_copy_fields` | `list[str] \| None` | `None` | Source columns excluded from the output |
 | `open_end_date` | `datetime \| None` | `9999-12-31` | `valid_until` value for currently active records |
@@ -206,7 +218,7 @@ Invalid input raises an error before any processing, so it can't silently change
 - Source columns must not reuse SCD2 output names (`valid_from`, `row_hash`, `upsert_flag`, ...) or internal names. Rename them, list them in `non_copy_fields`, or rename the output columns via `scd_columns`.
 - Business keys and `date_column` must not be null.
 - Each business key can have at most one row per snapshot date. Exact duplicate rows are allowed and collapsed; rows with the same key and date but different values are rejected, because there is no deterministic way to choose between them.
-- `df_tgt` must contain the source columns plus `valid_from` and `valid_until`, and at most one active record (`valid_until` equal to `open_end_date`) per business key. You can pass the full dimension table: only active records take part in the merge, and closed history rows are never modified.
+- `df_tgt` must satisfy the [target contract](#target-contract).
 
 ## Exceptions
 
