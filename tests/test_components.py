@@ -5,7 +5,7 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 from loadx.scd2 import transforms
-from loadx.scd2.config import SCD2Config, SCD2ColumnNames
+from loadx.scd2.config import SCD2Config, SCD2ColumnNames, SourceType
 from loadx.exceptions import (
     BusinessKeysEmptyError,
     ConfigurationError,
@@ -51,6 +51,21 @@ class TestSCD2Config:
         assert config.ignore_columns == ["created_at"]
         assert config.non_copy_fields == ["temp_field"]
         assert config.open_end_date == custom_date
+
+
+class TestSourceType:
+    """SourceType must behave like a string enum on every supported Python version."""
+
+    def test_compares_equal_to_value(self):
+        assert SourceType.FULL == "full"
+        assert SourceType("incremental") is SourceType.INCREMENTAL
+
+    def test_str_and_format_return_value(self):
+        assert str(SourceType.FULL) == "full"
+        assert f"{SourceType.INCREMENTAL}" == "incremental"
+
+    def test_is_str_instance(self):
+        assert isinstance(SourceType.FULL, str)
 
 
 class TestSCD2ColumnNames:

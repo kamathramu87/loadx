@@ -9,10 +9,17 @@ on:
       - main
 
 jobs:
-  test:
+  test-matrix:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Minimum supported (requires-python) and the primary development version.
+        python-version: ["3.9", "3.11"]
+    name: test (python ${{ matrix.python-version }})
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      UV_PYTHON: ${{ matrix.python-version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +29,7 @@ jobs:
       - name: Check for source changes
         id: changes
         run: |
-          git diff --name-only origin/main...HEAD | grep -qE '^(loadx/|tests/|pyproject\.toml|uv\.lock)' \
+          git diff --name-only origin/main...HEAD | grep -qE '^(loadx/|tests/|pyproject\.toml|uv\.lock|mypy\.ini|\.github/workflows/ci\.yml)' \
             && echo "src_changed=true" >> $GITHUB_OUTPUT \
             || echo "src_changed=false" >> $GITHUB_OUTPUT
 
@@ -30,7 +37,7 @@ jobs:
         if: steps.changes.outputs.src_changed == 'true'
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         if: steps.changes.outputs.src_changed == 'true'
@@ -41,9 +48,19 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run checks
-        if: steps.changes.outputs.src_changed == 'true'
+        if: steps.changes.outputs.src_changed == 'true' && matrix.python-version == '3.11'
         run: make check
 
       - name: Run tests
         if: steps.changes.outputs.src_changed == 'true'
         run: make test
+
+  # Branch protection requires a check named "test"; matrix jobs report under
+  # per-version names, so this job aggregates them into that single check.
+  test:
+    if: always()
+    needs: test-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all matrix jobs to pass
+        run: test "${{ needs.test-matrix.result }}" = "success"

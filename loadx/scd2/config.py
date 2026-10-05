@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 
-class SourceType(StrEnum):
+class SourceType(str, Enum):
+    # str mixin instead of enum.StrEnum, which requires Python 3.11.
     FULL = "full"
     INCREMENTAL = "incremental"
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __format__(self, format_spec: str) -> str:
+        return format(self.value, format_spec)
 
 
 # Constants
