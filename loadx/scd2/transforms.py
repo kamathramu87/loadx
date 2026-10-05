@@ -424,10 +424,12 @@ def finalize_output(df: DataFrame, config: SCD2Config) -> DataFrame:
 
     scd_output = output_scd_columns(config)
 
-    return df.filter(
-        (
-            f.coalesce(df[COL_ORIG_VALID_UNTIL], f.lit(config.open_end_date))
-            != df[config.scd_columns.valid_until]
-        )
-        | df[COL_ORIG_VALID_FROM].isNull()
-    ).select(source_columns + scd_output + [UPSERT_FLAG_COLUMN])
+    # Null-safe: with open_end_date=None both sides can be null, and a plain !=
+    # would evaluate to null and drop the update closing an active version.
+    valid_until_changed = ~f.coalesce(
+        df[COL_ORIG_VALID_UNTIL], f.lit(config.open_end_date)
+    ).eqNullSafe(df[config.scd_columns.valid_until])
+
+    return df.filter(valid_until_changed | df[COL_ORIG_VALID_FROM].isNull()).select(
+        source_columns + scd_output + [UPSERT_FLAG_COLUMN]
+    )
