@@ -24,7 +24,6 @@ from loadx.scd2.config import (
     COL_ROW_HASH_CHANGED,
     COL_ROW_HASH_CHANGED_LAG,
     COL_ROW_NUM,
-    HASH_SEPARATOR,
     SNAPSHOT_DATE_SUFFIX,
     UPSERT_FLAG_COLUMN,
     SourceType,
@@ -77,13 +76,15 @@ def validate_config(config: SCD2Config) -> None:
 
 
 def _validate_output_column_names(config: SCD2Config) -> None:
-    names = [*output_scd_columns(config), UPSERT_FLAG_COLUMN]
+    names = [*config.scd_columns.column_list(), UPSERT_FLAG_COLUMN]
     duplicates = sorted({n for n in names if names.count(n) > 1})
     if duplicates:
         raise ConfigurationError(f"Duplicate output column names: {duplicates}")
 
     # The default delete_flag output name is shared with the internal column that feeds it.
-    reserved = internal_columns(config.date_column) - {config.scd_columns.delete_flag}
+    reserved = internal_columns(config.date_column)
+    if config.scd_columns.delete_flag == COL_DELETE_FLAG:
+        reserved = reserved - {COL_DELETE_FLAG}
     collisions = sorted(set(names) & reserved)
     if collisions:
         raise ConfigurationError(
@@ -138,15 +139,11 @@ def validate_source_rows(df_src: DataFrame, config: SCD2Config) -> None:
     keys = [*config.business_keys, config.date_column]
     df = df_src.drop(*config.non_copy_fields) if config.non_copy_fields else df_src
     has_null = f.greatest(*[f.col(c).isNull() for c in keys], f.lit(False))
-    groups = (
-        df.distinct()
-        .groupBy(*keys)
-        .agg(f.count(f.lit(1)).alias("n"))
-        .withColumn("has_null", has_null)
-    )
+    count_column = _temporary_column(keys, "_validation_count")
+    groups = df.distinct().groupBy(*keys).agg(f.count(f.lit(1)).alias(count_column))
     stats = groups.agg(
-        f.sum(f.when(f.col("has_null"), f.col("n")).otherwise(0)).alias("null_rows"),
-        f.sum(f.when(~f.col("has_null") & (f.col("n") > 1), 1).otherwise(0)).alias(
+        f.sum(f.when(has_null, f.col(count_column)).otherwise(0)).alias("null_rows"),
+        f.sum(f.when(~has_null & (f.col(count_column) > 1), 1).otherwise(0)).alias(
             "conflicts"
         ),
     ).first()
@@ -161,7 +158,7 @@ def validate_source_rows(df_src: DataFrame, config: SCD2Config) -> None:
     if stats["conflicts"]:
         sample = [
             r.asDict()
-            for r in groups.filter(f.col("n") > 1)
+            for r in groups.filter(f.col(count_column) > 1)
             .select(*keys)
             .limit(MAX_REPORTED_CONFLICTS)
             .collect()
@@ -181,15 +178,18 @@ def validate_target(
         config.scd_columns.valid_from,
         config.scd_columns.valid_until,
     ]
+    if config.enable_latest_record_flag:
+        required = list(dict.fromkeys([*required, *output_scd_columns(config)]))
     missing = [c for c in required if c not in df_tgt.columns]
     if missing:
         raise DataValidationError(f"Target DataFrame is missing columns: {missing}")
 
+    count_column = _temporary_column(config.business_keys, "_validation_count")
     duplicated = (
         active_target_rows(df_tgt, config)
         .groupBy(*config.business_keys)
-        .count()
-        .filter(f.col("count") > 1)
+        .agg(f.count(f.lit(1)).alias(count_column))
+        .filter(f.col(count_column) > 1)
         .select(*config.business_keys)
         .limit(MAX_REPORTED_CONFLICTS)
         .collect()
@@ -203,7 +203,7 @@ def validate_target(
 
 def validate_data_freshness(
     df_src: DataFrame, df_tgt: DataFrame, config: SCD2Config
-) -> None:
+) -> Any:
     tgt_max = _get_max_date(df_tgt, config.scd_columns.valid_from)
     src_max = _get_max_date(df_src, config.date_column)
     if src_max < tgt_max:
@@ -211,6 +211,7 @@ def validate_data_freshness(
             "Source data (%s) is older than target data (%s)", src_max, tgt_max
         )
         raise OldDataExceptionError
+    return tgt_max
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +222,14 @@ def validate_data_freshness(
 def _get_max_date(df: DataFrame, date_column: str) -> Any:
     row = df.agg(f.max(date_column).alias("max_date")).first()
     return row["max_date"] if row else ""
+
+
+def _temporary_column(columns: list[str], prefix: str) -> str:
+    """Choose an aggregation alias without shadowing a grouping column."""
+    existing = {c.lower() for c in columns}
+    while prefix.lower() in existing:
+        prefix += "_"
+    return prefix
 
 
 def output_scd_columns(config: SCD2Config) -> list[str]:
@@ -260,9 +269,7 @@ def handle_incremental_load(
     df_src: DataFrame, df_tgt: DataFrame, config: SCD2Config
 ) -> DataFrame:
     logger.info("Processing incremental load")
-    validate_data_freshness(df_src, df_tgt, config)
-
-    tgt_max_date = _get_max_date(df_tgt, config.scd_columns.valid_from)
+    tgt_max_date = validate_data_freshness(df_src, df_tgt, config)
 
     # Closed history rows never change; merging them would tie on tgt_max_date
     # in the date-ordered windows and corrupt the active version.
@@ -270,7 +277,7 @@ def handle_incremental_load(
         active_target_rows(df_tgt, config)
         .withColumnRenamed(config.scd_columns.valid_from, COL_ORIG_VALID_FROM)
         .withColumnRenamed(config.scd_columns.valid_until, COL_ORIG_VALID_UNTIL)
-        .drop(*config.scd_columns.field_list())
+        .drop(*config.scd_columns.column_list())
         .withColumn(config.date_column, f.lit(tgt_max_date))
     )
 
@@ -282,13 +289,33 @@ def handle_incremental_load(
 def apply_hash_columns(
     df: DataFrame, config: SCD2Config, source_columns: list[str]
 ) -> DataFrame:
-    hashable = [c for c in source_columns if c not in (config.ignore_columns or [])]
+    excluded = {*config.business_keys, *(config.ignore_columns or [])}
+    hashable = sorted(c for c in source_columns if c not in excluded)
+    # JSON preserves field boundaries, types and null positions; sorting makes
+    # the hash independent of the source DataFrame's column order.
+    payload = f.to_json(
+        f.struct(*[f.col(c) for c in hashable]),
+        options={
+            "ignoreNullFields": "false",
+            "timeZone": "UTC",
+            "timestampFormat": "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX",
+            "timestampNTZFormat": "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+        },
+    )
     return df.withColumn(
-        COL_ROW_HASH_CHANGED,
-        f.sha2(f.concat_ws(HASH_SEPARATOR, *hashable, COL_DELETED), 256),
-    ).withColumn(
         config.scd_columns.row_hash,
-        f.sha2(f.concat_ws(HASH_SEPARATOR, *hashable), 256),
+        f.sha2(payload, 256),
+    ).withColumn(
+        COL_ROW_HASH_CHANGED,
+        f.sha2(
+            f.to_json(
+                f.struct(
+                    f.col(config.scd_columns.row_hash).alias("row_hash"),
+                    f.col(COL_DELETED).alias("deleted"),
+                )
+            ),
+            256,
+        ),
     )
 
 
@@ -433,3 +460,31 @@ def finalize_output(df: DataFrame, config: SCD2Config) -> DataFrame:
     return df.filter(valid_until_changed | df[COL_ORIG_VALID_FROM].isNull()).select(
         source_columns + scd_output + [UPSERT_FLAG_COLUMN]
     )
+
+
+def clear_previous_latest_flags(
+    changes: DataFrame, df_tgt: DataFrame, config: SCD2Config
+) -> DataFrame:
+    """Clear the latest flag on closed versions of keys that reappear.
+
+    Preserve the historical row's dates, attributes and audit metadata. Active
+    versions already receive their flag update through the normal pipeline.
+    """
+    columns = config.scd_columns
+    inserted_keys = changes.filter(f.col(UPSERT_FLAG_COLUMN) == "I").select(
+        *config.business_keys
+    )
+    closed_latest = df_tgt.filter(
+        f.col(columns.latest_record_flag)
+        & ~f.col(columns.valid_until).eqNullSafe(
+            f.lit(config.open_end_date).cast("timestamp")
+        )
+    ).join(inserted_keys, on=config.business_keys, how="left_semi")
+    if config.date_column not in closed_latest.columns:
+        closed_latest = closed_latest.withColumn(
+            config.date_column, f.col(columns.valid_from)
+        )
+    updates = closed_latest.withColumn(
+        columns.latest_record_flag, f.lit(False)
+    ).withColumn(UPSERT_FLAG_COLUMN, f.lit("U"))
+    return changes.unionByName(updates.select(changes.columns))

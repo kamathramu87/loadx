@@ -97,7 +97,7 @@ def expected_data_null_end_date():
             "valid_until": None,
             "active_flag": True,
             "delete_flag": False,
-            "row_hash": "3f6a065a85556b74eec2848b5521bdc19e1a19aca3ae26d8afaa31f6f332dbbd",
+            "row_hash": "f747576f601c091be365c57383bb895cecaf3f696ef23e9b002a4420667e115c",
             "upsert_flag": "I",
         },
         {
@@ -110,7 +110,7 @@ def expected_data_null_end_date():
             "valid_until": None,
             "active_flag": True,
             "delete_flag": False,
-            "row_hash": "772e600cf85233169530d898653fe6dbacd7d5eafa49af1bfa0ff351f23f3a20",
+            "row_hash": "c2c3a3aaaa2c7fea619fd38f2f175ab1d76203016193ef5eba764a503d97bead",
             "upsert_flag": "I",
         },
     ]
@@ -154,7 +154,7 @@ def expected_data_open_end_date():
             "valid_until": datetime.strptime("9999-12-31", "%Y-%m-%d"),
             "active_flag": True,
             "delete_flag": False,
-            "row_hash": "3f6a065a85556b74eec2848b5521bdc19e1a19aca3ae26d8afaa31f6f332dbbd",
+            "row_hash": "f747576f601c091be365c57383bb895cecaf3f696ef23e9b002a4420667e115c",
             "upsert_flag": "I",
         },
         {
@@ -167,7 +167,7 @@ def expected_data_open_end_date():
             "valid_until": datetime.strptime("9999-12-31", "%Y-%m-%d"),
             "active_flag": True,
             "delete_flag": False,
-            "row_hash": "772e600cf85233169530d898653fe6dbacd7d5eafa49af1bfa0ff351f23f3a20",
+            "row_hash": "c2c3a3aaaa2c7fea619fd38f2f175ab1d76203016193ef5eba764a503d97bead",
             "upsert_flag": "I",
         },
     ]
@@ -211,7 +211,7 @@ def expected_data_catchup_one_day():
             "valid_until": datetime.strptime("2022-01-03", "%Y-%m-%d"),
             "active_flag": False,
             "delete_flag": True,
-            "row_hash": "3f6a065a85556b74eec2848b5521bdc19e1a19aca3ae26d8afaa31f6f332dbbd",
+            "row_hash": "f747576f601c091be365c57383bb895cecaf3f696ef23e9b002a4420667e115c",
             "upsert_flag": "U",
         },
         {
@@ -224,7 +224,7 @@ def expected_data_catchup_one_day():
             "valid_until": datetime.strptime("2022-01-03", "%Y-%m-%d"),
             "active_flag": False,
             "delete_flag": False,
-            "row_hash": "772e600cf85233169530d898653fe6dbacd7d5eafa49af1bfa0ff351f23f3a20",
+            "row_hash": "c2c3a3aaaa2c7fea619fd38f2f175ab1d76203016193ef5eba764a503d97bead",
             "upsert_flag": "U",
         },
         {
@@ -237,7 +237,7 @@ def expected_data_catchup_one_day():
             "valid_until": datetime.strptime("9999-12-31", "%Y-%m-%d"),
             "active_flag": True,
             "delete_flag": False,
-            "row_hash": "95c3dc3ab87d7b0603fa4572beffb4fbdeb73b64ff1cb3b19cb9b7f6a890334d",
+            "row_hash": "bbbbac539154f0fc817ed6365c9fd794a50424156c8a10c3ed0c70cfc427d1db",
             "upsert_flag": "I",
         },
         {
@@ -250,7 +250,7 @@ def expected_data_catchup_one_day():
             "valid_until": datetime.strptime("9999-12-31", "%Y-%m-%d"),
             "active_flag": True,
             "delete_flag": False,
-            "row_hash": "25308fb7170d7a4afa6311649ff4dd9de16dab8006a45229163eccdb32e9938c",
+            "row_hash": "e6fd0c58d77528622c3cd33dcd567d6046256bd87d55d5de675015b11abed6ee",
             "upsert_flag": "I",
         },
     ]
