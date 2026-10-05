@@ -8,6 +8,8 @@ from pyspark.sql.window import Window
 
 from loadx.exceptions import (
     BusinessKeysEmptyError,
+    ConfigurationError,
+    DataValidationError,
     EmptyDataExceptionError,
     OldDataExceptionError,
 )
@@ -16,12 +18,17 @@ from loadx.scd2.config import (
     COL_DELETE_FLAG,
     COL_DELETED,
     COL_NEXT_CHANGE,
+    COL_NEXT_DATE_AVAILABLE,
     COL_ORIG_VALID_FROM,
     COL_ORIG_VALID_UNTIL,
     COL_ROW_HASH_CHANGED,
     COL_ROW_HASH_CHANGED_LAG,
+    COL_ROW_NUM,
     HASH_SEPARATOR,
+    SNAPSHOT_DATE_SUFFIX,
     UPSERT_FLAG_COLUMN,
+    SourceType,
+    internal_columns,
 )
 
 if TYPE_CHECKING:
@@ -38,11 +45,50 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+MAX_REPORTED_CONFLICTS = 5
+
+
 def validate_config(config: SCD2Config) -> None:
     if not config.business_keys:
         raise BusinessKeysEmptyError
     if not config.date_column:
-        raise ValueError("date_column cannot be empty")
+        raise ConfigurationError("date_column cannot be empty")
+    try:
+        SourceType(config.source_type)
+    except ValueError:
+        valid = [s.value for s in SourceType]
+        raise ConfigurationError(
+            f"source_type must be one of {valid}, got {config.source_type!r}"
+        ) from None
+    if config.date_column in config.business_keys:
+        raise ConfigurationError(
+            f"date_column {config.date_column!r} cannot also be a business key"
+        )
+    dropped_keys = [
+        c
+        for c in [*config.business_keys, config.date_column]
+        if c in (config.non_copy_fields or [])
+    ]
+    if dropped_keys:
+        raise ConfigurationError(
+            f"non_copy_fields cannot include business keys or date_column: {dropped_keys}"
+        )
+    _validate_output_column_names(config)
+
+
+def _validate_output_column_names(config: SCD2Config) -> None:
+    names = [*output_scd_columns(config), UPSERT_FLAG_COLUMN]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ConfigurationError(f"Duplicate output column names: {duplicates}")
+
+    # The default delete_flag output name is shared with the internal column that feeds it.
+    reserved = internal_columns(config.date_column) - {config.scd_columns.delete_flag}
+    collisions = sorted(set(names) & reserved)
+    if collisions:
+        raise ConfigurationError(
+            f"Output column names collide with internal columns: {collisions}"
+        )
 
 
 def validate_inputs(
@@ -54,7 +100,105 @@ def validate_inputs(
         col for col in [*business_keys, date_column] if col not in df_src.columns
     ]
     if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+        raise DataValidationError(f"Missing required columns: {missing}")
+
+
+def validate_source_columns(df_src: DataFrame, config: SCD2Config) -> None:
+    for param, cols in (
+        ("ignore_columns", config.ignore_columns),
+        ("non_copy_fields", config.non_copy_fields),
+    ):
+        unknown = [c for c in cols or [] if c not in df_src.columns]
+        if unknown:
+            raise DataValidationError(
+                f"{param} not found in source DataFrame: {unknown}"
+            )
+
+    # Any source column with one of these names would be overwritten or dropped silently.
+    reserved = (
+        internal_columns(config.date_column)
+        | set(config.scd_columns.column_list())
+        | {UPSERT_FLAG_COLUMN}
+    )
+    kept = set(df_src.columns) - set(config.non_copy_fields or [])
+    collisions = sorted(kept & reserved)
+    if collisions:
+        raise DataValidationError(
+            f"Source columns use names reserved for SCD2 output or processing: {collisions}. "
+            "Rename them, list them in non_copy_fields, or rename the SCD2 output "
+            "columns via scd_columns."
+        )
+
+
+def validate_source_rows(df_src: DataFrame, config: SCD2Config) -> None:
+    """Reject null keys/dates and rows that conflict on business key + snapshot date.
+
+    Exact duplicate rows are allowed; they are collapsed later in the pipeline.
+    """
+    keys = [*config.business_keys, config.date_column]
+    df = df_src.drop(*config.non_copy_fields) if config.non_copy_fields else df_src
+    has_null = f.greatest(*[f.col(c).isNull() for c in keys], f.lit(False))
+    groups = (
+        df.distinct()
+        .groupBy(*keys)
+        .agg(f.count(f.lit(1)).alias("n"))
+        .withColumn("has_null", has_null)
+    )
+    stats = groups.agg(
+        f.sum(f.when(f.col("has_null"), f.col("n")).otherwise(0)).alias("null_rows"),
+        f.sum(f.when(~f.col("has_null") & (f.col("n") > 1), 1).otherwise(0)).alias(
+            "conflicts"
+        ),
+    ).first()
+    if stats is None:
+        return
+
+    if stats["null_rows"]:
+        raise DataValidationError(
+            f"{stats['null_rows']} source row(s) have a null value in business keys "
+            f"or date_column {keys}"
+        )
+    if stats["conflicts"]:
+        sample = [
+            r.asDict()
+            for r in groups.filter(f.col("n") > 1)
+            .select(*keys)
+            .limit(MAX_REPORTED_CONFLICTS)
+            .collect()
+        ]
+        raise DataValidationError(
+            f"{stats['conflicts']} business key + {config.date_column} combination(s) "
+            f"have conflicting rows with different values, e.g. {sample}. Deduplicate "
+            "the source so each key has at most one row per snapshot."
+        )
+
+
+def validate_target(
+    df_tgt: DataFrame, config: SCD2Config, source_columns: list[str]
+) -> None:
+    required = [
+        *source_columns,
+        config.scd_columns.valid_from,
+        config.scd_columns.valid_until,
+    ]
+    missing = [c for c in required if c not in df_tgt.columns]
+    if missing:
+        raise DataValidationError(f"Target DataFrame is missing columns: {missing}")
+
+    duplicated = (
+        active_target_rows(df_tgt, config)
+        .groupBy(*config.business_keys)
+        .count()
+        .filter(f.col("count") > 1)
+        .select(*config.business_keys)
+        .limit(MAX_REPORTED_CONFLICTS)
+        .collect()
+    )
+    if duplicated:
+        raise DataValidationError(
+            "Target has more than one active record for business key(s) "
+            f"{[r.asDict() for r in duplicated]}"
+        )
 
 
 def validate_data_freshness(
@@ -79,6 +223,27 @@ def _get_max_date(df: DataFrame, date_column: str) -> Any:
     return row["max_date"] if row else ""
 
 
+def output_scd_columns(config: SCD2Config) -> list[str]:
+    """SCD2 columns emitted for this config, honouring optional flags and source type."""
+    return [
+        c
+        for c in config.scd_columns.column_list()
+        if (
+            config.enable_latest_record_flag
+            or c != config.scd_columns.latest_record_flag
+        )
+        and (config.source_type == "full" or c != config.scd_columns.delete_flag)
+    ]
+
+
+def active_target_rows(df_tgt: DataFrame, config: SCD2Config) -> DataFrame:
+    return df_tgt.filter(
+        f.col(config.scd_columns.valid_until).eqNullSafe(
+            f.lit(config.open_end_date).cast("timestamp")
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Transformations
 # ---------------------------------------------------------------------------
@@ -99,8 +264,11 @@ def handle_incremental_load(
 
     tgt_max_date = _get_max_date(df_tgt, config.scd_columns.valid_from)
 
+    # Closed history rows never change; merging them would tie on tgt_max_date
+    # in the date-ordered windows and corrupt the active version.
     df_tgt_base = (
-        df_tgt.withColumnRenamed(config.scd_columns.valid_from, COL_ORIG_VALID_FROM)
+        active_target_rows(df_tgt, config)
+        .withColumnRenamed(config.scd_columns.valid_from, COL_ORIG_VALID_FROM)
         .withColumnRenamed(config.scd_columns.valid_until, COL_ORIG_VALID_UNTIL)
         .drop(*config.scd_columns.field_list())
         .withColumn(config.date_column, f.lit(tgt_max_date))
@@ -143,13 +311,13 @@ def filter_for_changes(
 
 def process_deletions(df: DataFrame, config: SCD2Config) -> DataFrame:
     date_col = config.date_column
-    date_col_r = f"{date_col}_r"
+    date_col_r = f"{date_col}{SNAPSHOT_DATE_SUFFIX}"
 
     snapshot_dates = (
         df.select(date_col)
         .distinct()
         .withColumn(
-            "next_date_available",
+            COL_NEXT_DATE_AVAILABLE,
             f.lead(date_col).over(Window.orderBy(date_col)),
         )
         .withColumnRenamed(date_col, date_col_r)
@@ -166,7 +334,7 @@ def process_deletions(df: DataFrame, config: SCD2Config) -> DataFrame:
         .withColumn(
             COL_DELETED,
             f.when(
-                (f.col("next_date_available") != f.col(COL_DATE_LEAD))
+                (f.col(COL_NEXT_DATE_AVAILABLE) != f.col(COL_DATE_LEAD))
                 | (f.col(COL_DATE_LEAD).isNull() & (df[date_col] != max_snapshot_date)),
                 True,
             ).otherwise(False),
@@ -174,15 +342,15 @@ def process_deletions(df: DataFrame, config: SCD2Config) -> DataFrame:
     )
 
     base_cols = df_flagged.drop(
-        "next_date_available", COL_DATE_LEAD, date_col_r
+        COL_NEXT_DATE_AVAILABLE, COL_DATE_LEAD, date_col_r
     ).columns
     return (
-        df_flagged.drop("next_date_available", COL_DATE_LEAD, date_col_r)
+        df_flagged.drop(COL_NEXT_DATE_AVAILABLE, COL_DATE_LEAD, date_col_r)
         .withColumn(COL_DELETED, f.lit(False))
         .union(
             df_flagged.where(f.col(COL_DELETED))
             .drop(date_col, COL_DATE_LEAD, date_col_r)
-            .withColumnRenamed("next_date_available", date_col)
+            .withColumnRenamed(COL_NEXT_DATE_AVAILABLE, date_col)
             .select(base_cols)
         )
     )
@@ -231,12 +399,12 @@ def add_support_columns(df: DataFrame, config: SCD2Config) -> DataFrame:
             f.col(config.scd_columns.valid_from).desc()
         )
         result = (
-            result.withColumn("_row_num", f.row_number().over(latest_window))
+            result.withColumn(COL_ROW_NUM, f.row_number().over(latest_window))
             .withColumn(
                 config.scd_columns.latest_record_flag,
-                f.when(f.col("_row_num") == 1, True).otherwise(False),
+                f.when(f.col(COL_ROW_NUM) == 1, True).otherwise(False),
             )
-            .drop("_row_num")
+            .drop(COL_ROW_NUM)
         )
 
     return result
@@ -254,15 +422,7 @@ def finalize_output(df: DataFrame, config: SCD2Config) -> DataFrame:
     }
     source_columns = [c for c in df.columns if c not in internal_cols]
 
-    scd_output = [
-        c
-        for c in config.scd_columns.column_list()
-        if (
-            config.enable_latest_record_flag
-            or c != config.scd_columns.latest_record_flag
-        )
-        and (config.source_type == "full" or c != config.scd_columns.delete_flag)
-    ]
+    scd_output = output_scd_columns(config)
 
     return df.filter(
         (

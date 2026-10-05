@@ -27,6 +27,26 @@ COL_DATE_LEAD = "date_lead"
 COL_ROW_HASH_CHANGED = "row_hash_changed"
 COL_ROW_HASH_CHANGED_LAG = "row_hash_changed_lag"
 COL_DELETE_FLAG = "delete_flag"
+COL_NEXT_DATE_AVAILABLE = "next_date_available"
+COL_ROW_NUM = "_row_num"
+SNAPSHOT_DATE_SUFFIX = "_r"
+
+
+def internal_columns(date_column: str) -> set[str]:
+    """Columns the pipeline creates temporarily; user columns must not reuse these names."""
+    return {
+        COL_DELETED,
+        COL_ORIG_VALID_FROM,
+        COL_ORIG_VALID_UNTIL,
+        COL_NEXT_CHANGE,
+        COL_DATE_LEAD,
+        COL_ROW_HASH_CHANGED,
+        COL_ROW_HASH_CHANGED_LAG,
+        COL_DELETE_FLAG,
+        COL_NEXT_DATE_AVAILABLE,
+        COL_ROW_NUM,
+        f"{date_column}{SNAPSHOT_DATE_SUFFIX}",
+    }
 
 
 @dataclass

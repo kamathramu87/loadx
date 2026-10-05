@@ -38,14 +38,14 @@ class BusinessKeysEmptyError(ValueError, SCD2Error):
         super().__init__("business_keys cannot be empty")
 
 
-class ConfigurationError(SCD2Error):
+class ConfigurationError(SCD2Error, ValueError):
     """Exception raised when SCD2 configuration is invalid."""
 
     def __init__(self, message: str) -> None:
         super().__init__(f"Configuration error: {message}")
 
 
-class DataValidationError(SCD2Error):
+class DataValidationError(SCD2Error, ValueError):
     """Exception raised when data validation fails."""
 
     def __init__(self, message: str) -> None:

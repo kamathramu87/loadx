@@ -8,6 +8,8 @@ from loadx.scd2 import transforms
 from loadx.scd2.config import SCD2Config, SCD2ColumnNames
 from loadx.exceptions import (
     BusinessKeysEmptyError,
+    ConfigurationError,
+    DataValidationError,
     EmptyDataExceptionError,
 )
 from loadx.utils.spark_factory import SparkSessionFactory
@@ -162,12 +164,75 @@ class TestValidation:
 
     def test_validate_config_valid(self):
         """Test config validation passes with valid config."""
-        config = MagicMock()
-        config.business_keys = ["id"]
-        config.date_column = "snapshot_date"
+        config = SCD2Config.create(business_keys=["id"], date_column="snapshot_date")
 
         # Should not raise
         transforms.validate_config(config)
+
+    def test_validate_config_invalid_source_type(self):
+        """A misspelled source_type must not silently skip deletion detection."""
+        config = SCD2Config.create(business_keys=["id"], source_type="typo")  # type: ignore[arg-type]
+
+        with pytest.raises(ConfigurationError, match="source_type must be one of"):
+            transforms.validate_config(config)
+
+    def test_validate_config_accepts_source_type_string(self):
+        """Plain string values matching a SourceType are accepted."""
+        transforms.validate_config(SCD2Config.create(business_keys=["id"], source_type="incremental"))  # type: ignore[arg-type]
+
+    def test_validate_config_date_column_is_business_key(self):
+        config = SCD2Config.create(business_keys=["id", "snapshot_date"])
+
+        with pytest.raises(ConfigurationError, match="cannot also be a business key"):
+            transforms.validate_config(config)
+
+    def test_validate_config_non_copy_fields_drops_key(self):
+        config = SCD2Config.create(business_keys=["id"], non_copy_fields=["id"])
+
+        with pytest.raises(ConfigurationError, match="non_copy_fields cannot include"):
+            transforms.validate_config(config)
+
+    def test_validate_config_duplicate_output_names(self):
+        config = SCD2Config.create(
+            business_keys=["id"], scd_columns={"valid_from": "x", "valid_until": "x"}
+        )
+
+        with pytest.raises(
+            ConfigurationError, match=r"Duplicate output column names: \['x'\]"
+        ):
+            transforms.validate_config(config)
+
+    def test_validate_config_output_name_is_upsert_flag(self):
+        config = SCD2Config.create(
+            business_keys=["id"], scd_columns={"row_hash": "upsert_flag"}
+        )
+
+        with pytest.raises(ConfigurationError, match="Duplicate output column names"):
+            transforms.validate_config(config)
+
+    def test_validate_config_output_name_collides_with_internal(self):
+        config = SCD2Config.create(
+            business_keys=["id"], scd_columns={"row_hash": "deleted"}
+        )
+
+        with pytest.raises(ConfigurationError, match="collide with internal columns"):
+            transforms.validate_config(config)
+
+    def test_validate_config_row_hash_renamed_to_internal_delete_flag(self):
+        """'delete_flag' is only allowed as the name of the delete_flag output itself."""
+        config = SCD2Config.create(
+            business_keys=["id"],
+            scd_columns={"delete_flag": "is_deleted", "row_hash": "delete_flag"},
+        )
+
+        with pytest.raises(ConfigurationError, match="collide with internal columns"):
+            transforms.validate_config(config)
+
+    def test_validation_errors_are_value_errors(self):
+        """Callers catching ValueError keep working."""
+        assert issubclass(ConfigurationError, ValueError)
+        assert issubclass(DataValidationError, ValueError)
+        assert ConfigurationError("x").message == "Configuration error: x"
 
 
 class TestSparkSessionFactory:

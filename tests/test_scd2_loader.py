@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from loadx.exceptions import EmptyDataExceptionError, OldDataExceptionError
+from loadx.exceptions import (
+    ConfigurationError,
+    DataValidationError,
+    EmptyDataExceptionError,
+    OldDataExceptionError,
+)
 import pytest
 from chispa.dataframe_comparer import assert_df_equality
 
@@ -377,3 +382,148 @@ class TestSCD2IncrementalSourceType:
             ignore_row_order=True,
             ignore_nullable=True,
         )
+
+
+SCHEMA = "id long, city string, snapshot_date timestamp"
+
+
+class TestInputValidation:
+    """Invalid inputs must raise instead of silently changing the SCD2 result."""
+
+    @pytest.fixture
+    def scd(self, spark_session):
+        return SCD2Loader(spark_session)
+
+    @pytest.fixture
+    def day1(self, spark_session):
+        return spark_session.createDataFrame(
+            [(1, "A", datetime(2024, 1, 1)), (2, "B", datetime(2024, 1, 1))], SCHEMA
+        )
+
+    def test_invalid_source_type(self, scd, day1):
+        with pytest.raises(ConfigurationError, match="source_type"):
+            scd.slowly_changing_dimension(
+                df_src=day1, business_keys="id", source_type="typo"
+            )
+
+    def test_source_column_uses_internal_name(self, scd, day1):
+        df = day1.withColumn("deleted", day1.city)
+        with pytest.raises(DataValidationError, match=r"reserved.*\['deleted'\]"):
+            scd.slowly_changing_dimension(df_src=df, business_keys="id")
+
+    def test_source_column_uses_output_name(self, scd, day1):
+        df = day1.withColumn("row_hash", day1.city)
+        with pytest.raises(DataValidationError, match=r"\['row_hash'\]"):
+            scd.slowly_changing_dimension(df_src=df, business_keys="id")
+
+    def test_reserved_source_column_allowed_when_not_copied(self, scd, day1):
+        df = day1.withColumn("deleted", day1.city)
+        out = scd.slowly_changing_dimension(
+            df_src=df, business_keys="id", non_copy_fields=["deleted"]
+        )
+        assert out.count() == 2
+
+    @pytest.mark.parametrize("param", ["ignore_columns", "non_copy_fields"])
+    def test_unknown_column_reference(self, scd, day1, param):
+        with pytest.raises(
+            DataValidationError, match=rf"{param} not found.*'updated_ad'"
+        ):
+            scd.slowly_changing_dimension(
+                df_src=day1, business_keys="id", **{param: ["updated_ad"]}
+            )
+
+    def test_null_business_key(self, scd, day1, spark_session):
+        df = day1.union(
+            spark_session.createDataFrame([(None, "Z", datetime(2024, 1, 1))], SCHEMA)
+        )
+        with pytest.raises(DataValidationError, match="1 source row.*null"):
+            scd.slowly_changing_dimension(df_src=df, business_keys="id")
+
+    def test_null_snapshot_date(self, scd, day1, spark_session):
+        df = day1.union(spark_session.createDataFrame([(3, "Z", None)], SCHEMA))
+        with pytest.raises(DataValidationError, match="null"):
+            scd.slowly_changing_dimension(df_src=df, business_keys="id")
+
+    def test_conflicting_rows_same_key_and_date(self, scd, day1, spark_session):
+        df = day1.union(
+            spark_session.createDataFrame([(1, "Q", datetime(2024, 1, 1))], SCHEMA)
+        )
+        with pytest.raises(DataValidationError, match=r"1 business key.*'id': 1"):
+            scd.slowly_changing_dimension(df_src=df, business_keys="id")
+
+    def test_rows_differing_only_in_non_copy_fields_are_not_conflicts(self, scd, day1):
+        import pyspark.sql.functions as f
+
+        df = day1.withColumn("batch", f.lit(1)).union(
+            day1.withColumn("batch", f.lit(2))
+        )
+        out = scd.slowly_changing_dimension(
+            df_src=df, business_keys="id", non_copy_fields=["batch"]
+        )
+        assert out.count() == 2
+
+    def test_exact_duplicate_rows_are_allowed(self, scd, day1):
+        out = scd.slowly_changing_dimension(df_src=day1.union(day1), business_keys="id")
+        assert sorted((r.id, r.city) for r in out.collect()) == [(1, "A"), (2, "B")]
+
+    def test_target_missing_columns(self, scd, day1, spark_session):
+        target = scd.slowly_changing_dimension(df_src=day1, business_keys="id").drop(
+            "city"
+        )
+        day2 = spark_session.createDataFrame([(1, "A", datetime(2024, 1, 2))], SCHEMA)
+        with pytest.raises(
+            DataValidationError,
+            match=r"Target DataFrame is missing columns: \['city'\]",
+        ):
+            scd.slowly_changing_dimension(
+                df_src=day2, df_tgt=target, business_keys="id"
+            )
+
+    def test_target_with_multiple_active_rows_per_key(self, scd, day1, spark_session):
+        target = scd.slowly_changing_dimension(df_src=day1, business_keys="id")
+        target = target.union(target)
+        day2 = spark_session.createDataFrame([(1, "A", datetime(2024, 1, 2))], SCHEMA)
+        with pytest.raises(DataValidationError, match="more than one active record"):
+            scd.slowly_changing_dimension(
+                df_src=day2, df_tgt=target, business_keys="id"
+            )
+
+
+class TestFullHistoryTarget:
+    """Passing the whole dimension (closed + active rows) as df_tgt must behave like active-only."""
+
+    @pytest.fixture
+    def history(self, spark_session):
+        scd = SCD2Loader(spark_session)
+        snapshots = spark_session.createDataFrame(
+            [(1, "A", datetime(2024, 1, 1)), (1, "B", datetime(2024, 1, 2))], SCHEMA
+        )
+        return scd.slowly_changing_dimension(df_src=snapshots, business_keys="id").drop(
+            "upsert_flag"
+        )
+
+    def test_history_has_closed_and_active_rows(self, history):
+        assert sorted(r.active_flag for r in history.collect()) == [False, True]
+
+    def test_unchanged_record_produces_no_operations(self, spark_session, history):
+        day3 = spark_session.createDataFrame([(1, "B", datetime(2024, 1, 3))], SCHEMA)
+        out = SCD2Loader(spark_session).slowly_changing_dimension(
+            df_src=day3, df_tgt=history, business_keys="id"
+        )
+        assert out.collect() == []
+
+    def test_changed_record_closes_only_the_active_version(
+        self, spark_session, history
+    ):
+        day3 = spark_session.createDataFrame([(1, "C", datetime(2024, 1, 3))], SCHEMA)
+        out = SCD2Loader(spark_session).slowly_changing_dimension(
+            df_src=day3, df_tgt=history, business_keys="id"
+        )
+        rows = sorted(
+            (r.city, r.valid_from, r.valid_until, r.active_flag, r.upsert_flag)
+            for r in out.collect()
+        )
+        assert rows == [
+            ("B", datetime(2024, 1, 2), datetime(2024, 1, 3), False, "U"),
+            ("C", datetime(2024, 1, 3), datetime(9999, 12, 31), True, "I"),
+        ]
