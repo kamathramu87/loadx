@@ -173,7 +173,7 @@ the loader should backfill `row_hash` using the new format before comparing them
 |---|---|---|---|
 | `df_src` | `DataFrame` | — | Source snapshot DataFrame |
 | `business_keys` | `list[str] \| str` | — | Columns that uniquely identify a dimension row |
-| `date_column` | `str` | `snapshot_date` | Column containing the snapshot date |
+| `date_column` | `str` | `snapshot_date` | Snapshot column of Spark type `date`, `timestamp`, `timestamp_ntz`, or parseable `string`; normalized to `timestamp` |
 | `df_tgt` | `DataFrame \| None` | `None` | Existing SCD2 table for incremental loads. See [Target contract](#target-contract) |
 | `ignore_columns` | `list[str] \| None` | `None` | Columns excluded from hash-based change detection |
 | `non_copy_fields` | `list[str] \| None` | `None` | Source columns excluded from the output |
@@ -235,6 +235,8 @@ Invalid input raises an error before any processing, so it can't silently change
 - Every column in `ignore_columns` and `non_copy_fields` must exist in the source.
 - Source columns must not reuse SCD2 output names (`valid_from`, `row_hash`, `upsert_flag`, ...) or internal names. Rename them, list them in `non_copy_fields`, or rename the output columns via `scd_columns`.
 - Business keys and `date_column` must not be null.
+- The snapshot column accepts Spark `DateType`, `TimestampType`, `TimestampNTZType`, or `StringType`. Dates and timestamp-without-time-zone values are converted to `TimestampType`; strings are parsed with Spark's timestamp cast (for example, `2024-01-01` or `2024-01-01T12:30:00.123456+05:30`). Dates become midnight in `spark.sql.session.timeZone`; strings without an offset and `timestamp_ntz` values also use that time zone. Explicit offsets are respected, and timestamp microseconds are preserved. Numeric epoch values and other types are rejected; convert them explicitly before calling the loader.
+- Malformed strings raise `DataValidationError` with ANSI mode either enabled or disabled. Normalization runs before null, duplicate, freshness, and ordering checks. Equivalent strings denote the same snapshot: identical rows collapse, and differing attributes for the same key and instant raise a conflict. The output snapshot column and validity bounds use `TimestampType`, even when `spark.sql.timestampType` prefers `TIMESTAMP_NTZ`.
 - Each business key can have at most one row per snapshot date. Exact duplicate rows are allowed and collapsed; rows with the same key and date but different values are rejected, because there is no deterministic way to choose between them.
 - `df_tgt` must satisfy the [target contract](#target-contract).
 

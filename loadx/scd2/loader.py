@@ -54,7 +54,11 @@ class SCD2Loader:
         Args:
             df_src: Source DataFrame containing the data to process
             business_keys: List of columns that constitute the business key
-            date_column: Column name containing snapshot dates
+            date_column: Snapshot column of Spark type date, timestamp,
+                timestamp_ntz, or string parseable by Spark's timestamp cast.
+                Normalized to timestamp before validation and processing.
+                Dates and values without an offset use the Spark session time
+                zone. Invalid strings and unsupported types raise DataValidationError.
             df_tgt: Existing SCD2 table for an incremental load, typically the
                 full dimension table built from earlier outputs. It must contain
                 the source columns plus `valid_from` and `valid_until`. Only
@@ -119,6 +123,7 @@ class SCD2Loader:
         t.validate_config(config)
         t.validate_inputs(df_src, config.business_keys, config.date_column)
         t.validate_source_columns(df_src, config)
+        df_src = t.normalize_snapshot_dates(df_src, config.date_column)
         t.validate_source_rows(df_src, config)
 
         source_columns = self._source_columns(df_src, config)
