@@ -4,6 +4,11 @@ Changelog
 Unreleased
 ----------
 
+- Normalize snapshot dates to `TimestampType` before validation and processing.
+  Support dates, timestamps, timestamp_ntz values and parseable strings; reject
+  malformed strings in either ANSI mode and reject unsupported types. Document
+  session-time-zone handling and validate duplicates after normalization.
+
 - Preserve field boundaries and null positions in change hashes. Hash values
   change; see the documentation's hash compatibility guidance.
 - Reject output names that overwrite internal processing columns and preserve

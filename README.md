@@ -92,6 +92,12 @@ from delta.tables import DeltaTable
 
 To exclude columns such as audit timestamps from change detection, pass `ignore_columns=["updated_at"]`.
 
+Snapshot dates can be Spark dates, timestamps, timestamps without a time zone, or
+strings parseable as timestamps. They are normalized to `TimestampType` before
+validation and ordering. Dates and values without an explicit offset use the
+Spark session time zone; malformed strings and unsupported types raise
+`DataValidationError`. See [input validation](docs/index.md#input-validation).
+
 With `enable_latest_record_flag=True`, pass the full target history with all SCD2
 columns. A reappearing key emits an update clearing the previous closed version's
 latest flag as well as an insert for the new version.

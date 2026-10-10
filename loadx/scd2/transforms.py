@@ -4,6 +4,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import pyspark.sql.functions as f
+from pyspark.sql.types import DateType, StringType, TimestampNTZType, TimestampType
 from pyspark.sql.window import Window
 
 from loadx.exceptions import (
@@ -131,6 +132,41 @@ def validate_source_columns(df_src: DataFrame, config: SCD2Config) -> None:
         )
 
 
+def normalize_snapshot_dates(df_src: DataFrame, date_column: str) -> DataFrame:
+    """Normalize supported snapshot dates to Spark's TimestampType.
+
+    Accept dates, timestamps (with or without a time zone), and strings parsed
+    by Spark's timestamp cast. Dates, naive strings and timestamp_ntz values
+    use the session time zone. Reject unsupported types and malformed strings
+    before null and duplicate-row validation, including with ANSI mode enabled.
+    """
+    date_type = df_src.schema[date_column].dataType
+    if not isinstance(
+        date_type, (DateType, TimestampType, TimestampNTZType, StringType)
+    ):
+        raise DataValidationError(
+            f"Snapshot date column {date_column!r} must be date, timestamp, "
+            f"timestamp_ntz or string; got {date_type.simpleString()}"
+        )
+    if isinstance(date_type, TimestampType):
+        return df_src
+
+    date_value = f.col(date_column)
+    if isinstance(date_type, StringType):
+        # TRY_CAST returns null on parse failure regardless of ANSI settings.
+        # Escape the identifier rather than interpolating it as SQL syntax.
+        identifier = date_column.replace("`", "``")
+        normalized = f.expr(f"try_cast(`{identifier}` AS TIMESTAMP_LTZ)")
+        if not df_src.filter(date_value.isNotNull() & normalized.isNull()).isEmpty():
+            raise DataValidationError(
+                f"Snapshot date column {date_column!r} contains a value that "
+                "cannot be parsed as a timestamp"
+            )
+    else:
+        normalized = date_value.cast(TimestampType())
+    return df_src.withColumn(date_column, normalized)
+
+
 def validate_source_rows(df_src: DataFrame, config: SCD2Config) -> None:
     """Reject null keys/dates and rows that conflict on business key + snapshot date.
 
@@ -248,7 +284,7 @@ def output_scd_columns(config: SCD2Config) -> list[str]:
 def active_target_rows(df_tgt: DataFrame, config: SCD2Config) -> DataFrame:
     return df_tgt.filter(
         f.col(config.scd_columns.valid_until).eqNullSafe(
-            f.lit(config.open_end_date).cast("timestamp")
+            f.lit(config.open_end_date).cast(TimestampType())
         )
     )
 
@@ -260,9 +296,9 @@ def active_target_rows(df_tgt: DataFrame, config: SCD2Config) -> DataFrame:
 
 def prepare_source_data(df_src: DataFrame, config: SCD2Config) -> DataFrame:
     df = df_src.drop(*config.non_copy_fields) if config.non_copy_fields else df_src
-    return df.withColumn(COL_ORIG_VALID_FROM, f.lit(None).cast("timestamp")).withColumn(
-        COL_ORIG_VALID_UNTIL, f.lit(None).cast("timestamp")
-    )
+    return df.withColumn(
+        COL_ORIG_VALID_FROM, f.lit(None).cast(TimestampType())
+    ).withColumn(COL_ORIG_VALID_UNTIL, f.lit(None).cast(TimestampType()))
 
 
 def handle_incremental_load(
@@ -389,7 +425,7 @@ def add_support_columns(df: DataFrame, config: SCD2Config) -> DataFrame:
         .withColumn(
             config.scd_columns.valid_from,
             f.coalesce(
-                df[COL_ORIG_VALID_FROM], f.col(config.date_column).cast("timestamp")
+                df[COL_ORIG_VALID_FROM], f.col(config.date_column).cast(TimestampType())
             ),
         )
         .withColumn(
@@ -477,7 +513,7 @@ def clear_previous_latest_flags(
     closed_latest = df_tgt.filter(
         f.col(columns.latest_record_flag)
         & ~f.col(columns.valid_until).eqNullSafe(
-            f.lit(config.open_end_date).cast("timestamp")
+            f.lit(config.open_end_date).cast(TimestampType())
         )
     ).join(inserted_keys, on=config.business_keys, how="left_semi")
     if config.date_column not in closed_latest.columns:
