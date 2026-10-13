@@ -1,0 +1,17 @@
+resources:
+  jobs:
+    scd2_integration:
+      name: loadx-scd2-integration
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: scd2_delta_checks
+          # No cluster definition: use Databricks serverless notebook compute.
+          notebook_task:
+            notebook_path: ../notebooks/test_scd2_delta.py
+            base_parameters:
+              wheel_dir: ${workspace.file_path}/dist/bundle
+              test_schema: ${var.test_schema}
+          timeout_seconds: 1800
+          max_retries: 0
+          # Surface test failures without serverless optimization retries.
+          disable_auto_optimization: true
