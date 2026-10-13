@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import pyspark.sql.functions as f
 from pyspark.sql.window import Window
 
+from loadx.exceptions import DataValidationError
 from loadx.scd2 import transforms as t
 from loadx.scd2.config import (
     COL_DELETED,
@@ -14,6 +15,7 @@ from loadx.scd2.config import (
     SCD2Config,
     SourceType,
 )
+from loadx.scd2.delta import merge_changes, quote_table
 from loadx.utils.spark_factory import SparkSessionFactory
 
 if TYPE_CHECKING:
@@ -116,6 +118,79 @@ class SCD2Loader:
             source_type=source_type,
         )
         return self._process(df_src, df_tgt, config)
+
+    def load(
+        self,
+        df_src: DataFrame,
+        target_table: str,
+        business_keys: list[str] | str,
+        date_column: str = DEFAULT_DATE_COLUMN,
+        ignore_columns: list[str] | None = None,
+        non_copy_fields: list[str] | None = None,
+        open_end_date: datetime | None = OPEN_END_DATE,
+        scd_columns: SCD2ColumnNames | dict[str, str] | None = None,
+        enable_latest_record_flag: bool = False,
+        source_type: SourceType = SourceType.FULL,
+    ) -> DataFrame:
+        """Transform a snapshot/feed and persist its history to a Delta table.
+
+        Creates a missing table using Delta and error-if-exists mode. For an
+        existing table, updates U operations and inserts I operations using
+        business keys plus valid_from. No history or unchanged rows are deleted.
+        Returns the complete persisted table, without collecting it locally.
+
+        target_table is an unquoted table, schema.table, or catalog.schema.table
+        name; the schema must already exist. New tables omit upsert_flag. Existing
+        tables must contain the configured SCD2 metadata and compatible business
+        columns; schema evolution is not performed. A snapshot_date column is
+        optional in existing targets. Other options match slowly_changing_dimension.
+
+        Requires a Delta-enabled Spark session (such as Databricks). Serialize
+        writers to each dimension: transformation reads precede the atomic merge.
+        Replays follow the transformer's date policy (older batches may raise).
+        """
+        table = quote_table(target_table)
+        config = SCD2Config.create(
+            business_keys=business_keys,
+            date_column=date_column,
+            ignore_columns=ignore_columns,
+            non_copy_fields=non_copy_fields,
+            open_end_date=open_end_date,
+            scd_columns=scd_columns,
+            enable_latest_record_flag=enable_latest_record_flag,
+            source_type=source_type,
+        )
+        target = (
+            self.spark.table(table) if self.spark.catalog.tableExists(table) else None
+        )
+        changes = self._process(df_src, target, config)
+        if target is None:
+            # Spark Connect runtimes may reject the "errorifexists" alias.
+            changes.drop("upsert_flag").write.format("delta").mode("error").saveAsTable(
+                table
+            )
+        else:
+            missing = (
+                set(changes.columns)
+                - set(target.columns)
+                - {
+                    "upsert_flag",
+                    config.date_column,
+                }
+            )
+            if missing:
+                raise DataValidationError(
+                    f"Target is missing SCD2 output columns: {sorted(missing)}"
+                )
+            merge_changes(
+                self.spark,
+                changes,
+                target_table,
+                config.business_keys,
+                config.scd_columns.valid_from,
+                target.columns,
+            )
+        return self.spark.table(table)
 
     def _process(
         self, df_src: DataFrame, df_tgt: DataFrame | None, config: SCD2Config

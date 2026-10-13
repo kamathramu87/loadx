@@ -1,0 +1,38 @@
+bundle:
+  name: loadx-integration
+
+include:
+  - resources/scd2_integration.job.yml
+
+variables:
+  test_schema:
+    description: Existing writable catalog.schema for disposable integration tables
+    default: lakehouse_dev.bronze
+
+artifacts:
+  loadx:
+    type: whl
+    path: .
+    build: uv run --with build python scripts/build_bundle_wheel.py
+    files:
+      - source: dist/bundle/*.whl
+
+sync:
+  include:
+    - dist/bundle/*.whl
+  exclude:
+    # The notebook must test the installed wheel, not import the source checkout.
+    - loadx/**
+    - tests/**
+    - docs/**
+    - site/**
+    - .claude/**
+    - .github/**
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://adb-7405615889366971.11.azuredatabricks.net
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

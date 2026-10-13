@@ -71,24 +71,44 @@ The first call has no target, so every row is an insert (`upsert_flag = "I"`) an
 | 1 | Marketing | 2024-01-02 | 9999-12-31 | `True` | `I` — insert the new version |
 | 3 | Finance | 2024-01-02 | 9999-12-31 | `True` | `I` — insert the new key |
 
-Bob is unchanged, so he does not appear. Do not overwrite the target with this output, or unchanged records will be lost. Apply it with a merge keyed on the business keys plus `valid_from`: update matching rows where `upsert_flag = "U"`, and insert rows where `upsert_flag = "I"`. For example, with Delta Lake:
+Bob is unchanged, so he does not appear. Do not overwrite the target with this output,
+or unchanged records will be lost.
+
+### Load directly into a Delta table
+
+Use `load()` to transform and persist each batch together:
 
 ```python
-from delta.tables import DeltaTable
-
-(
-    DeltaTable.forName(spark, "dim_employee").alias("t")
-    .merge(
-        changes.alias("s"),
-        "t.employee_id = s.employee_id AND t.valid_from = s.valid_from",
-    )
-    .whenMatchedUpdateAll(condition="s.upsert_flag = 'U'")
-    .whenNotMatchedInsertAll(condition="s.upsert_flag = 'I'")
-    .execute()
-)
+loader.load(day1, "catalog.schema.dim_employee", "employee_id")
+history = loader.load(day2, "catalog.schema.dim_employee", "employee_id")
 ```
 
-`upsert_flag` is included in the output, so drop it before merging if the target table has no such column.
+The first call creates a missing Delta table. Subsequent calls match on business
+keys plus `valid_from`, update matching `U` operations, and insert unmatched `I`
+operations. Closed history and unchanged rows remain intact. New tables omit the
+source-only `upsert_flag`; the returned DataFrame contains the full target history.
+
+All transformation options are supported, including custom SCD column names,
+`source_type`, and `enable_latest_record_flag`. Existing tables must have compatible
+business and metadata columns; `snapshot_date` is optional. Schema evolution is
+not performed. Use an existing schema and a Delta-enabled Spark session. Serialize
+writers to the same dimension because transformation reads precede the atomic merge.
+Empty or stale batches follow the existing transformer's validation rules.
+
+The Databricks Asset Bundle in `databricks.yml` builds and deploys the library
+wheel and a serverless notebook job. Deploy and run it with:
+
+```bash
+databricks bundle deploy -t dev
+databricks bundle run -t dev scd2_integration
+```
+
+The notebook installs the built wheel, restarts Python, and runs five integration
+scenarios directly, without pytest. Exceptions fail the job, and a successful run
+displays a scenario results table. Override the existing scratch schema with
+`--var test_schema=catalog.schema` when deploying. The configured schema's backing
+storage must permit table creation and writes. Each scenario cleans up its own
+uniquely named table.
 
 #### Target contract
 
