@@ -28,16 +28,18 @@ build: clean-build ## Build wheel and sdist files using uv.
 clean-build: ## clean build artifacts
 	@rm -rf dist
 
+.PHONY: build-check
+build-check: build ## Build and validate distributions without uploading.
+	@echo "🚀 Validating wheel and sdist metadata"
+	@uv tool run --from 'twine>=7,<8' twine check --strict dist/*
+
 .PHONY: publish
-publish: ## Publish a release to PyPI.
-	@echo "🚀 Publishing: Dry run."
-	@uv config pypi-token.pypi $(PYPI_TOKEN)
-	@uv publish --dry-run
+publish: build-check ## Build, validate, and publish to PyPI using UV_PUBLISH_TOKEN.
 	@echo "🚀 Publishing."
 	@uv publish
 
 .PHONY: build-and-publish
-build-and-publish: build publish ## Build and publish.
+build-and-publish: publish ## Alias for publish (build, validate, then upload).
 
 .PHONY: docs-test
 docs-test: ## Test if documentation can be built without warnings or errors.
